@@ -4,6 +4,7 @@ import ChessBoard from "@/components/board/ChessBoard";
 import GameControls from "@/components/controls/GameControls";
 import RewardsPanel from "@/components/rewards/RewardsPanel";
 import TurnBadge from "@/components/controls/TurnBadge";
+import DifficultySelect from "@/components/controls/DifficultySelect";
 
 export default function Page() {
   return (
@@ -18,6 +19,7 @@ export default function Page() {
         <TurnBadge />
         <GameControls />
         <RewardsPanel />
+        <DifficultySelect />
       </aside>
     </AppLayout>
   );

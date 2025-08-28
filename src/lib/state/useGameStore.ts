@@ -4,6 +4,7 @@ import type { Square } from "chess.js";
 import { createEngine, type Engine } from "@/lib/rules/engineAdapter";
 import { LESSONS, type Lesson } from "@/lib/rules/presets";
 import { checkGoalMet } from "@/lib/rules/scoring";
+import { chooseBotMove, type BotLevel } from "@/lib/rules/bot";
 
 type Turn = "child" | "bot";
 type PendingPromotion = {
@@ -11,6 +12,8 @@ type PendingPromotion = {
   to: Square;
   options: Array<"q" | "r" | "b" | "n">;
 } | null;
+
+type HintArrow = { from: Square; to: Square } | null;
 
 type GameState = {
   // engine + board
@@ -27,8 +30,11 @@ type GameState = {
   lessons: Lesson[];
   currentLesson?: Lesson | null;
   lessonComplete: boolean;
-  loadLesson: (id: string) => void;
-  exitLesson: () => void;
+
+  // hint
+  hintArrow: HintArrow;
+  hint: () => void;
+  clearHint: () => void;
 
   // meta / kid delight
   moves: number;
@@ -37,7 +43,14 @@ type GameState = {
   stickerEvery: number;
   maxStickers: number;
 
+  // bot difficulty
+  botLevel: BotLevel;
+  setBotLevel: (level: BotLevel) => void;
+
   // actions
+  loadLesson: (id: string) => void;
+  exitLesson: () => void;
+
   selectSquare: (sq: Square) => void;
   tryMove: (to: Square) => void;
   confirmPromotion: (p: "q" | "r" | "b" | "n") => void;
@@ -45,7 +58,6 @@ type GameState = {
 
   undoMove: () => void;
   restartGame: () => void;
-  hint: () => void;
   setTurn: (t: Turn) => void;
 
   // bot
@@ -64,8 +76,7 @@ export const useGameStore = create<GameState>((set, get) => {
   const scheduleBotIfNeeded = () => {
     setTimeout(() => {
       const { turn, pendingPromotion, currentLesson } = get();
-      // In lessons, keep it single-player (no bot) to reduce chaos:
-      if (currentLesson) return;
+      if (currentLesson) return; // no bot in lessons
       if (turn === "bot" && !pendingPromotion) {
         get().botMove();
       }
@@ -88,16 +99,40 @@ export const useGameStore = create<GameState>((set, get) => {
     currentLesson: null,
     lessonComplete: false,
 
+    // hint
+    hintArrow: null,
+    clearHint: () => set({ hintArrow: null }),
+    hint: () => {
+      const { engine, currentLesson } = get();
+      const all = engine.allLegalVerbose();
+      if (!all.length) return;
+
+      if (currentLesson && (currentLesson.goal.type === "reach" || currentLesson.goal.type === "capture")) {
+        const targets = currentLesson.goal.targets ?? [];
+        const targetMove = all.find((m: any) => targets.includes(m.to));
+        if (targetMove) return set({ hintArrow: { from: targetMove.from, to: targetMove.to } });
+      }
+
+      const capture = all.find((m: any) => (m as any).captured);
+      if (capture) return set({ hintArrow: { from: capture.from, to: capture.to } });
+
+      const pick = all[Math.floor(Math.random() * all.length)];
+      set({ hintArrow: { from: pick.from, to: pick.to } });
+    },
+
     moves: 0,
     stickers: 0,
     turn: "child",
     stickerEvery: 5,
     maxStickers: 4,
 
+    // bot difficulty
+    botLevel: 1,
+    setBotLevel: (level) => set({ botLevel: level }),
+
     loadLesson: (id) => {
       const lesson = get().lessons.find((l) => l.id === id) ?? null;
       if (!lesson) return;
-      // load its FEN and reset meta state
       get().engine.load(lesson.fen);
       set({
         currentLesson: lesson,
@@ -109,12 +144,12 @@ export const useGameStore = create<GameState>((set, get) => {
         stickers: 0,
         pendingPromotion: null,
         lastMove: null,
+        hintArrow: null,
       });
       reloadFen();
     },
 
     exitLesson: () => {
-      // Return to a normal game start
       get().engine.load();
       set({
         currentLesson: null,
@@ -126,6 +161,7 @@ export const useGameStore = create<GameState>((set, get) => {
         turn: "child",
         pendingPromotion: null,
         lastMove: null,
+        hintArrow: null,
       });
       reloadFen();
     },
@@ -133,28 +169,19 @@ export const useGameStore = create<GameState>((set, get) => {
     selectSquare: (sq) => {
       const piece = get().engine.pieceAt(sq);
       if (!piece) {
-        return set({
-          selected: undefined,
-          legalTargets: [],
-          pendingPromotion: null,
-        });
+        return set({ selected: undefined, legalTargets: [], pendingPromotion: null, hintArrow: null });
       }
       if (piece.color !== get().engine.turn()) {
-        return set({
-          selected: undefined,
-          legalTargets: [],
-          pendingPromotion: null,
-        });
+        return set({ selected: undefined, legalTargets: [], pendingPromotion: null, hintArrow: null });
       }
       const legalTargets = get().engine.legalMovesFrom(sq);
-      set({ selected: sq, legalTargets, pendingPromotion: null });
+      set({ selected: sq, legalTargets, pendingPromotion: null, hintArrow: null });
     },
 
     tryMove: (to) => {
       const { engine, selected, moves, turn, currentLesson } = get();
       if (!selected) return;
 
-      // Check if promotion is required
       const verbose = engine.legalMovesVerboseFrom(selected);
       const candidate = verbose.find((m: any) => m.to === to);
       if (!candidate) return;
@@ -162,6 +189,7 @@ export const useGameStore = create<GameState>((set, get) => {
       if ((candidate as any).promotion) {
         return set({
           pendingPromotion: { from: selected, to, options: ["q", "r", "b", "n"] },
+          hintArrow: null,
         });
       }
 
@@ -170,11 +198,8 @@ export const useGameStore = create<GameState>((set, get) => {
 
       const nextMoves = moves + 1;
 
-      // After a successful move, check lesson goal
       let lessonComplete = false;
-      if (currentLesson) {
-        lessonComplete = checkGoalMet(engine, currentLesson);
-      }
+      if (currentLesson) lessonComplete = checkGoalMet(engine, currentLesson);
 
       set({
         fen: engine.fen(),
@@ -186,9 +211,9 @@ export const useGameStore = create<GameState>((set, get) => {
         pendingPromotion: null,
         lastMove: { from: selected, to },
         lessonComplete,
+        hintArrow: null,
       });
 
-      // In lesson mode, don't trigger bot
       if (!currentLesson) scheduleBotIfNeeded();
     },
 
@@ -202,9 +227,7 @@ export const useGameStore = create<GameState>((set, get) => {
       const nextMoves = moves + 1;
 
       let lessonComplete = false;
-      if (currentLesson) {
-        lessonComplete = checkGoalMet(engine, currentLesson);
-      }
+      if (currentLesson) lessonComplete = checkGoalMet(engine, currentLesson);
 
       set({
         fen: engine.fen(),
@@ -216,13 +239,14 @@ export const useGameStore = create<GameState>((set, get) => {
         pendingPromotion: null,
         lastMove: { from: pendingPromotion.from, to: pendingPromotion.to },
         lessonComplete,
+        hintArrow: null,
       });
 
       if (!currentLesson) scheduleBotIfNeeded();
     },
 
     cancelSelection: () =>
-      set({ selected: undefined, legalTargets: [], pendingPromotion: null }),
+      set({ selected: undefined, legalTargets: [], pendingPromotion: null, hintArrow: null }),
 
     undoMove: () => {
       const { engine, moves, stickers, stickerEvery, turn } = get();
@@ -240,6 +264,7 @@ export const useGameStore = create<GameState>((set, get) => {
         turn: turn === "child" ? "bot" : "child",
         pendingPromotion: null,
         lastMove: null,
+        hintArrow: null,
       });
     },
 
@@ -260,39 +285,19 @@ export const useGameStore = create<GameState>((set, get) => {
         pendingPromotion: null,
         lastMove: null,
         lessonComplete: false,
+        hintArrow: null,
       });
-    },
-
-    hint: () => {
-      // If nothing selected, auto-select a movable piece (same as before)
-      const { engine, selected } = get();
-      if (selected) return;
-      const files = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
-      const ranks = ["1", "2", "3", "4", "5", "6", "7", "8"] as const;
-      for (const r of ranks) {
-        for (const f of files) {
-          const sq = (f + r) as Square;
-          const p = engine.pieceAt(sq);
-          if (p && p.color === engine.turn()) {
-            const targets = engine.legalMovesFrom(sq);
-            if (targets.length) {
-              return set({ selected: sq, legalTargets: targets });
-            }
-          }
-        }
-      }
     },
 
     setTurn: (t) => set({ turn: t }),
 
     botMove: () => {
-      const { engine, moves, turn } = get();
-      const list = engine.allLegalVerbose();
-      if (!list.length) return;
+      const { engine, moves, turn, botLevel } = get();
+      const pick = chooseBotMove(engine, botLevel);
+      if (!pick) return;
 
-      const pick = list[Math.floor(Math.random() * list.length)];
-      // @ts-ignore optional promotion field
-      engine.makeMove(pick.from, pick.to, (pick as any).promotion);
+      // @ts-ignore promotion optional
+      engine.makeMove(pick.from as Square, pick.to as Square, (pick as any).promotion);
 
       const nextMoves = moves + 1;
       set({
@@ -303,7 +308,8 @@ export const useGameStore = create<GameState>((set, get) => {
         stickers: awardIfNeeded(nextMoves),
         turn: turn === "child" ? "bot" : "child",
         pendingPromotion: null,
-        lastMove: { from: pick.from, to: pick.to },
+        lastMove: { from: pick.from as Square, to: pick.to as Square },
+        hintArrow: null,
       });
     },
   };

@@ -10,6 +10,7 @@ import LessonCompleteDialog from "./LessonCompleteDialog";
 import { defaultBoardPair } from "@/lib/theme/colors";
 import { useGameStore } from "@/lib/state/useGameStore";
 import type { Square as Sq } from "chess.js";
+import HintArrow from "./HintArrow";
 
 export default function ChessBoard() {
   const { light, dark } = defaultBoardPair;
@@ -22,15 +23,16 @@ export default function ChessBoard() {
   const engine = useGameStore((s) => s.engine);
   const lastMove = useGameStore((s) => s.lastMove);
   const currentLesson = useGameStore((s) => s.currentLesson);
+  const hintArrow = useGameStore((s) => s.hintArrow);
 
-  // For reach/capture lessons, show star targets
+  // Lesson target stars (reach/capture)
   const lessonTargets =
     currentLesson && (currentLesson.goal.type === "reach" || currentLesson.goal.type === "capture")
       ? (currentLesson.goal.targets ?? [])
       : [];
   const isLessonTarget = (sq: Sq) => lessonTargets.includes(sq as string);
 
-  // index 0..63 → a8..h1 (rank 8 rendered at the top)
+  // 0..63 → a8..h1 (UI shows rank 8 at top)
   const indexToSquare = (i: number): Sq => {
     const file = i % 8;
     const rank = Math.floor(i / 8);
@@ -39,7 +41,7 @@ export default function ChessBoard() {
     return `${files[file]}${uiRank + 1}` as Sq;
   };
 
-  // re-map when FEN changes so framer computes Layout transitions
+  // recompute keys when FEN changes (helps framer-motion layout)
   const squares = React.useMemo(() => Array.from({ length: 64 }, (_, i) => i), [fen]);
 
   const isTarget = (sq: Sq) => legalTargets.includes(sq);
@@ -54,6 +56,9 @@ export default function ChessBoard() {
     }
   };
 
+  // Glow if this square is the source of the hinted move
+  const isHintSource = (sq: Sq) => (hintArrow ? hintArrow.from === sq : false);
+
   return (
     <div className="w-full">
       <div className="mx-auto max-w-[min(88vw,680px)]">
@@ -67,6 +72,7 @@ export default function ChessBoard() {
               const sq = indexToSquare(i);
               const piece = engine.pieceAt(sq);
               const arriving = lastMove?.to === sq;
+              const glowHint = isHintSource(sq);
 
               return (
                 <Square
@@ -78,11 +84,16 @@ export default function ChessBoard() {
                   isHint={isTarget(sq)}
                   onClick={handleClick}
                 >
-                  {/* lesson star target (behind piece if any) */}
+                  {/* lesson star target (behind piece) */}
                   {currentLesson && isLessonTarget(sq) && (
                     <span className="pointer-events-none absolute inset-0 grid place-items-center">
                       <span className="text-2xl opacity-65">⭐</span>
                     </span>
+                  )}
+
+                  {/* glow ring for hinted piece source */}
+                  {glowHint && (
+                    <span className="pointer-events-none absolute inset-0 rounded-[14px] ring-4 ring-purple-400/80" />
                   )}
 
                   {piece && (
@@ -103,12 +114,13 @@ export default function ChessBoard() {
           </motion.div>
 
           {/* Overlays */}
+          <HintArrow />
           <PromotionDialog />
           <LessonCompleteDialog />
         </div>
 
         <p className="mt-3 text-center text-sm text-neutral-500">
-          Tap a piece to see legal moves. Tap a dot to move.
+          Tap a piece to see legal moves. Tap a dot to move. Use Hint for a suggested move.
         </p>
       </div>
     </div>
