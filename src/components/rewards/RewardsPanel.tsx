@@ -17,7 +17,8 @@ export default function RewardsPanel() {
         <CardTitle className="text-base">⭐ Sticker Rewards</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-2 gap-3">
+        {/* Bigger cells and stars */}
+        <div className="grid grid-cols-2 gap-4">
           {slots.map((i) => {
             const filled = i < stickers;
             const isNewest = i === stickers - 1; // the star just earned
@@ -25,12 +26,16 @@ export default function RewardsPanel() {
             return (
               <motion.div
                 key={i}
-                className="flex aspect-square items-center justify-center rounded-xl border bg-neutral-50"
+                className="flex aspect-square items-center justify-center rounded-2xl border bg-neutral-50"
                 initial={false}
                 animate={isNewest ? { scale: [1, 1.15, 1] } : { scale: 1 }}
                 transition={{ duration: 0.35, ease: "easeOut" }}
               >
-                <span className={`text-3xl ${filled ? "opacity-100" : "opacity-30"}`} aria-hidden>
+                <span
+                  className={`select-none ${filled ? "opacity-100" : "opacity-30"}`}
+                  style={{ fontSize: "3rem", lineHeight: 1 }} // was ~1.75rem; now BIG
+                  aria-hidden
+                >
                   ⭐
                 </span>
               </motion.div>

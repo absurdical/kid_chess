@@ -11,6 +11,7 @@ import { defaultBoardPair } from "@/lib/theme/colors";
 import { useGameStore } from "@/lib/state/useGameStore";
 import type { Square as Sq } from "chess.js";
 import HintArrow from "./HintArrow";
+import GameOverDialog from "./GameOverDialog";
 
 export default function ChessBoard() {
   const { light, dark } = defaultBoardPair;
@@ -114,6 +115,7 @@ export default function ChessBoard() {
           </motion.div>
 
           {/* Overlays */}
+          <GameOverDialog />
           <HintArrow />
           <PromotionDialog />
           <LessonCompleteDialog />

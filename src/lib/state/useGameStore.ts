@@ -15,6 +15,9 @@ type PendingPromotion = {
 
 type HintArrow = { from: Square; to: Square } | null;
 
+type GameOverKind = "checkmate" | "stalemate" | "draw";
+type Winner = "child" | "bot" | "none";
+
 type GameState = {
   // engine + board
   engine: Engine;
@@ -47,6 +50,12 @@ type GameState = {
   botLevel: BotLevel;
   setBotLevel: (level: BotLevel) => void;
 
+  // game over
+  gameOver: boolean;
+  gameOverKind?: GameOverKind | null;
+  winner?: Winner | null;
+  dismissGameOver: () => void;
+
   // actions
   loadLesson: (id: string) => void;
   exitLesson: () => void;
@@ -73,17 +82,37 @@ export const useGameStore = create<GameState>((set, get) => {
     return award ? stickers + 1 : stickers;
   };
 
+  const reloadFen = () => set({ fen: get().engine.fen() });
+
+  const computeGameOver = (): { over: boolean; kind?: GameOverKind; winner?: Winner } => {
+    const e = get().engine;
+    if (!e.gameOver()) return { over: false };
+
+    const noMoves = e.allLegalVerbose().length === 0;
+    const sideToMove = e.turn(); // side with no moves
+    const inCheck = e.inCheck();
+
+    if (noMoves) {
+      if (inCheck) {
+        // side to move is checkmated -> other side wins
+        const winner: Winner = sideToMove === "w" ? "bot" : "child";
+        return { over: true, kind: "checkmate", winner };
+      }
+      return { over: true, kind: "stalemate", winner: "none" };
+    }
+    return { over: true, kind: "draw", winner: "none" };
+  };
+
   const scheduleBotIfNeeded = () => {
     setTimeout(() => {
-      const { turn, pendingPromotion, currentLesson } = get();
-      if (currentLesson) return; // no bot in lessons
+      const { turn, pendingPromotion, currentLesson, gameOver } = get();
+      if (currentLesson) return;         // no bot during lessons
+      if (gameOver) return;              // stop if game ended
       if (turn === "bot" && !pendingPromotion) {
         get().botMove();
       }
     }, 450);
   };
-
-  const reloadFen = () => set({ fen: get().engine.fen() });
 
   return {
     engine,
@@ -107,15 +136,22 @@ export const useGameStore = create<GameState>((set, get) => {
       const all = engine.allLegalVerbose();
       if (!all.length) return;
 
+      // Lesson-aware: prefer a move that reaches a target
       if (currentLesson && (currentLesson.goal.type === "reach" || currentLesson.goal.type === "capture")) {
         const targets = currentLesson.goal.targets ?? [];
         const targetMove = all.find((m: any) => targets.includes(m.to));
-        if (targetMove) return set({ hintArrow: { from: targetMove.from, to: targetMove.to } });
+        if (targetMove) {
+          return set({ hintArrow: { from: targetMove.from, to: targetMove.to } });
+        }
       }
 
+      // Otherwise: prefer captures
       const capture = all.find((m: any) => (m as any).captured);
-      if (capture) return set({ hintArrow: { from: capture.from, to: capture.to } });
+      if (capture) {
+        return set({ hintArrow: { from: capture.from, to: capture.to } });
+      }
 
+      // Fallback: random legal move
       const pick = all[Math.floor(Math.random() * all.length)];
       set({ hintArrow: { from: pick.from, to: pick.to } });
     },
@@ -129,6 +165,12 @@ export const useGameStore = create<GameState>((set, get) => {
     // bot difficulty
     botLevel: 1,
     setBotLevel: (level) => set({ botLevel: level }),
+
+    // game over
+    gameOver: false,
+    gameOverKind: null,
+    winner: null,
+    dismissGameOver: () => set({ gameOver: false, gameOverKind: null, winner: null }),
 
     loadLesson: (id) => {
       const lesson = get().lessons.find((l) => l.id === id) ?? null;
@@ -145,6 +187,9 @@ export const useGameStore = create<GameState>((set, get) => {
         pendingPromotion: null,
         lastMove: null,
         hintArrow: null,
+        gameOver: false,
+        gameOverKind: null,
+        winner: null,
       });
       reloadFen();
     },
@@ -162,6 +207,9 @@ export const useGameStore = create<GameState>((set, get) => {
         pendingPromotion: null,
         lastMove: null,
         hintArrow: null,
+        gameOver: false,
+        gameOverKind: null,
+        winner: null,
       });
       reloadFen();
     },
@@ -169,10 +217,20 @@ export const useGameStore = create<GameState>((set, get) => {
     selectSquare: (sq) => {
       const piece = get().engine.pieceAt(sq);
       if (!piece) {
-        return set({ selected: undefined, legalTargets: [], pendingPromotion: null, hintArrow: null });
+        return set({
+          selected: undefined,
+          legalTargets: [],
+          pendingPromotion: null,
+          hintArrow: null,
+        });
       }
       if (piece.color !== get().engine.turn()) {
-        return set({ selected: undefined, legalTargets: [], pendingPromotion: null, hintArrow: null });
+        return set({
+          selected: undefined,
+          legalTargets: [],
+          pendingPromotion: null,
+          hintArrow: null,
+        });
       }
       const legalTargets = get().engine.legalMovesFrom(sq);
       set({ selected: sq, legalTargets, pendingPromotion: null, hintArrow: null });
@@ -182,6 +240,7 @@ export const useGameStore = create<GameState>((set, get) => {
       const { engine, selected, moves, turn, currentLesson } = get();
       if (!selected) return;
 
+      // Promotion check
       const verbose = engine.legalMovesVerboseFrom(selected);
       const candidate = verbose.find((m: any) => m.to === to);
       if (!candidate) return;
@@ -198,8 +257,11 @@ export const useGameStore = create<GameState>((set, get) => {
 
       const nextMoves = moves + 1;
 
+      // Lesson goal check
       let lessonComplete = false;
-      if (currentLesson) lessonComplete = checkGoalMet(engine, currentLesson);
+      if (currentLesson) {
+        lessonComplete = checkGoalMet(engine, currentLesson);
+      }
 
       set({
         fen: engine.fen(),
@@ -214,6 +276,19 @@ export const useGameStore = create<GameState>((set, get) => {
         hintArrow: null,
       });
 
+      // Game over?
+      {
+        const end = computeGameOver();
+        if (end.over) {
+          set({
+            gameOver: true,
+            gameOverKind: end.kind ?? null,
+            winner: end.winner ?? null,
+          });
+          return;
+        }
+      }
+
       if (!currentLesson) scheduleBotIfNeeded();
     },
 
@@ -227,7 +302,9 @@ export const useGameStore = create<GameState>((set, get) => {
       const nextMoves = moves + 1;
 
       let lessonComplete = false;
-      if (currentLesson) lessonComplete = checkGoalMet(engine, currentLesson);
+      if (currentLesson) {
+        lessonComplete = checkGoalMet(engine, currentLesson);
+      }
 
       set({
         fen: engine.fen(),
@@ -241,6 +318,19 @@ export const useGameStore = create<GameState>((set, get) => {
         lessonComplete,
         hintArrow: null,
       });
+
+      // Game over?
+      {
+        const end = computeGameOver();
+        if (end.over) {
+          set({
+            gameOver: true,
+            gameOverKind: end.kind ?? null,
+            winner: end.winner ?? null,
+          });
+          return;
+        }
+      }
 
       if (!currentLesson) scheduleBotIfNeeded();
     },
@@ -265,6 +355,9 @@ export const useGameStore = create<GameState>((set, get) => {
         pendingPromotion: null,
         lastMove: null,
         hintArrow: null,
+        gameOver: false,
+        gameOverKind: null,
+        winner: null,
       });
     },
 
@@ -286,6 +379,9 @@ export const useGameStore = create<GameState>((set, get) => {
         lastMove: null,
         lessonComplete: false,
         hintArrow: null,
+        gameOver: false,
+        gameOverKind: null,
+        winner: null,
       });
     },
 
@@ -296,7 +392,7 @@ export const useGameStore = create<GameState>((set, get) => {
       const pick = chooseBotMove(engine, botLevel);
       if (!pick) return;
 
-      // @ts-ignore promotion optional
+      // @ts-ignore promotion optional on Move
       engine.makeMove(pick.from as Square, pick.to as Square, (pick as any).promotion);
 
       const nextMoves = moves + 1;
@@ -311,6 +407,19 @@ export const useGameStore = create<GameState>((set, get) => {
         lastMove: { from: pick.from as Square, to: pick.to as Square },
         hintArrow: null,
       });
+
+      // Game over?
+      {
+        const end = computeGameOver();
+        if (end.over) {
+          set({
+            gameOver: true,
+            gameOverKind: end.kind ?? null,
+            winner: end.winner ?? null,
+          });
+          return;
+        }
+      }
     },
   };
 });
